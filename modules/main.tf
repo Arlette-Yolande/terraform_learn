@@ -1,3 +1,5 @@
+
+
 # Resource Group
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
@@ -12,12 +14,13 @@ resource "azurerm_virtual_network" "vnet" {
   resource_group_name = azurerm_resource_group.rg.name
 }
 
-# Subnet
+# Subnets
 resource "azurerm_subnet" "subnet" {
-  name                 = var.subnet_name
+  count                = var.subnet_count
+  name                 = "subnet-${count.index + 1}"
   resource_group_name  = azurerm_resource_group.rg.name
   virtual_network_name = azurerm_virtual_network.vnet.name
-  address_prefixes     = var.subnet_prefix
+  address_prefixes     = [element(var.subnet_prefixes, count.index)]
 }
 
 # Network Security Group
@@ -26,8 +29,8 @@ resource "azurerm_network_security_group" "nsg" {
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
-  security_rule {             
-    name                       = "My-nsg"
+  security_rule {
+    name                       = "Allow-SSH"
     priority                   = 1001
     direction                  = "Inbound"
     access                     = "Allow"
@@ -39,44 +42,45 @@ resource "azurerm_network_security_group" "nsg" {
   }
 }
 
-# Network Interface
-resource "azurerm_network_interface" "nic" {
-  count               = 2 
-  name                = "${var.vm_name[count.index]}-nic"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-
-  ip_configuration {
-    name                          = "myNicConfiguration"
-    subnet_id                     = azurerm_subnet.subnet.id
-    private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = count.index == 1 ? azurerm_public_ip.pip.id : null 
-  }
-}
-
-# Public IP
+# Public IPs
 resource "azurerm_public_ip" "pip" {
-  #count               = length(var.vm_name) 
-  name                = var.public_ip_name
+  count               = var.subnet_count
+  name                = element(var.public_ip_names, count.index)
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   allocation_method   = "Dynamic"
 }
 
-# Virtual Machinerm 
+# Network Interfaces
+resource "azurerm_network_interface" "nic" {
+  count               = var.subnet_count * var.vm_count_per_subnet
+  name                = "${var.vm_names[count.index]}-nic"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  ip_configuration {
+    name                          = "myNicConfiguration"
+    subnet_id                     = azurerm_subnet.subnet[floor(count.index / var.vm_count_per_subnet)].id
+    private_ip_address_allocation = "Dynamic"
+    public_ip_address_id          = count.index % var.vm_count_per_subnet == 0 ? null : azurerm_public_ip.pip[floor(count.index / var.vm_count_per_subnet)].id
+  }
+}
+
+
+# Virtual Machines
 resource "azurerm_virtual_machine" "vm" {
-  count                 = 2
-  name                  = var.vm_name[count.index]
+  count                 = var.subnet_count * var.vm_count_per_subnet
+  name                  = element(var.vm_names, count.index)
   location              = azurerm_resource_group.rg.location
   resource_group_name   = azurerm_resource_group.rg.name
   network_interface_ids = [azurerm_network_interface.nic[count.index].id]
   vm_size               = var.vm_size
 
-  delete_os_disk_on_termination = true
+  delete_os_disk_on_termination    = true
   delete_data_disks_on_termination = true
 
   storage_os_disk {
-    name              = "${var.vm_name[count.index]}-osdisk"
+    name              = "${element(var.vm_names, count.index)}-osdisk"
     caching           = "ReadWrite"
     create_option     = "FromImage"
     managed_disk_type = "Standard_LRS"
@@ -90,7 +94,7 @@ resource "azurerm_virtual_machine" "vm" {
   }
 
   os_profile {
-    computer_name  = var.computer_name
+    computer_name  = element(var.vm_names, count.index)
     admin_username = var.admin_username
     admin_password = var.admin_password
   }
@@ -100,9 +104,9 @@ resource "azurerm_virtual_machine" "vm" {
   }
 }
 
-# Associate NSG with NIC
+# Associate NSG with NICs
 resource "azurerm_network_interface_security_group_association" "nsg_association" {
-  count                     = 2
+  count                     = var.subnet_count * var.vm_count_per_subnet
   network_interface_id      = azurerm_network_interface.nic[count.index].id
   network_security_group_id = azurerm_network_security_group.nsg.id
 }
